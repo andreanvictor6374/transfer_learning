@@ -16,13 +16,20 @@ import tempfile
 tfds.disable_progress_bar()
 # See available datasets
 #print(tfds.list_builders())
-list_model={1:"MobileNetV2",2:"resnet50"}
 list_ds={1:"cats_vs_dogs",2:"tf_flowers"}
+list_model={1:"MobileNetV2",2:"resnet50"}
+lits_opt={1:'sgd_momentum',2:'adam'}
+
+data_sets=list_ds[2]
+model_name=list_model[2]
+opt_idx=lits_opt[2]
+
 initial_epochs = 10
 fine_tune_epochs = 10
 
-model_name=list_model[2]
-data_sets=list_ds[1]
+
+tensorboard=tf.keras.callbacks.TensorBoard(log_dir='logs/model_{}_{}_{}'.format(model_name,data_sets,opt_idx), histogram_freq=1)
+
 
 SPLIT_WEIGHTS = (8, 1, 1)
 splits = tfds.Split.ALL.subsplit(weighted=SPLIT_WEIGHTS)
@@ -63,7 +70,7 @@ labels=[]
 for image, label in raw_train.take(-1):
     labels.append(get_label_name(label))
   
-IMG_SIZE = 160 if model_name=="MobileNetV2" else 224
+IMG_SIZE = 160 if model_name=="MobileNetV2" else 100
 
 def format_example(image, label):
   image = tf.cast(image, tf.float32)
@@ -116,7 +123,7 @@ feature_batch_average = global_average_layer(feature_batch)
 print(feature_batch_average.shape)
 
 NUM_CLASSES=1 if metadata.features['label'].num_classes==2 else metadata.features['label'].num_classes
-prediction_layer = keras.layers.Dense(NUM_CLASSES, activation=None if data_sets=="cats_vs_dogs" else 'softmax')
+prediction_layer = keras.layers.Dense(NUM_CLASSES, activation=None if metadata.features['label'].num_classes==2 else 'softmax')
 prediction_batch = prediction_layer(feature_batch_average)
 print(prediction_batch.shape)
 
@@ -126,10 +133,10 @@ model = tf.keras.Sequential([
   prediction_layer
 ])
 
-learning_rate= 0.0001 
-opt=tf.keras.optimizers.RMSprop(lr=learning_rate) if model_name=="MobileNetV2" else tf.keras.optimizers.Adam(lr=1e-5)
+#learning_rate= 0.01 
+opt=tf.keras.optimizers.Adam(lr=1e-5) if opt_idx=='adam' else tf.keras.optimizers.SGD(lr=0.0005,momentum=0.9)
 model.compile(optimizer=opt,
-              loss='binary_crossentropy' if data_sets=="cats_vs_dogs" else 'sparse_categorical_crossentropy',
+              loss='binary_crossentropy' if metadata.features['label'].num_classes==2 else 'sparse_categorical_crossentropy',
               metrics=['accuracy'])
 
 model.summary()
@@ -146,7 +153,7 @@ print("initial accuracy: {:.2f}".format(accuracy0))
 
 history = model.fit(train_batches,
                     epochs=initial_epochs,
-                    validation_data=validation_batches)
+                    validation_data=validation_batches, callbacks=[tensorboard])
 
 acc = history.history['accuracy']
 val_acc = history.history['val_accuracy']
@@ -171,7 +178,7 @@ plt.ylabel('Cross Entropy')
 plt.ylim([0,max(plt.ylim())])
 plt.title('Training and Validation Loss')
 plt.xlabel('epoch')
-plt.savefig('Figures/{}_{}_change_classifier.png'.format(model_name,data_sets))
+plt.savefig('Figures/{}_{}_{}_change_classifier.png'.format(model_name,data_sets,opt_idx))
 plt.show()
 
 #%%=================Fine tunning=================================================
@@ -214,17 +221,18 @@ def add_regularization(model_reg, regularizer=tf.keras.regularizers.l2(0.001)):
 # Freeze all the layers before the `fine_tune_at` layer
 for layer in base_model.layers[:fine_tune_at]:
   layer.trainable =  False
+  if 'bn' in layer.name:
+    layer.freeze = False
 
-if model_name=="resnet50":   
-    model=add_regularization(model)
-#     unfreeze BN layers from stage 5
-    for layer in model.layers[fine_tune_at:]:
-        if 'bn' in layer.name:
-            layer.freeze=False
+#if model_name=="resnet50":   
+#    model=add_regularization(model)
+##     unfreeze BN layers from stage 5
+#    for layer in model.layers[fine_tune_at:]:
+#        if 'bn' in layer.name:
+#            layer.freeze=False
 
-opt=tf.keras.optimizers.RMSprop(lr=learning_rate/10) if model_name=="MobileNetV2" else tf.keras.optimizers.Adam(lr=1e-5)
 model.compile(optimizer=opt,
-              loss='binary_crossentropy' if data_sets=="cats_vs_dogs" else 'sparse_categorical_crossentropy',
+              loss='binary_crossentropy' if metadata.features['label'].num_classes==2 else 'sparse_categorical_crossentropy',
               metrics=['accuracy'])
 
 model.summary()
@@ -237,7 +245,7 @@ total_epochs =  initial_epochs + fine_tune_epochs
 history_fine = model.fit(train_batches,
                          epochs=total_epochs,
                          initial_epoch =  history.epoch[-1],
-                         validation_data=validation_batches)
+                         validation_data=validation_batches, callbacks=[tensorboard])
 
 
 acc += history_fine.history['accuracy']
@@ -250,10 +258,10 @@ def write_(val,name):
     with open('results/'+name+'.txt', 'w') as output:
         output.write(str(val))
 
-write_(acc,'{}_{}_acc'.format(model_name,data_sets))
-write_(val_acc,'{}_{}_val_acc'.format(model_name,data_sets))
-write_(loss,'{}_{}_loss'.format(model_name,data_sets))
-write_(val_loss,'{}_{}_val_loss'.format(model_name,data_sets))
+write_(acc,'{}_{}_{}_acc'.format(model_name,data_sets,opt_idx))
+write_(val_acc,'{}_{}_{}_val_acc'.format(model_name,data_sets,opt_idx))
+write_(loss,'{}_{}_{}_loss'.format(model_name,data_sets,opt_idx))
+write_(val_loss,'{}_{}_{}_val_loss'.format(model_name,data_sets,opt_idx))
 
 
 plt.figure(figsize=(8, 8))
@@ -309,13 +317,13 @@ plt.legend(loc='upper right')
 plt.title('Training and Validation Loss')
 plt.xlabel('epoch')
 
-plt.savefig('Figures/{}_{}_fine_tunning.png'.format(model_name,data_sets))
+plt.savefig('Figures/{}_{}_{}_fine_tunning.png'.format(model_name,data_sets,opt_idx))
 plt.show()
 
 
 # Save keras model
-model.save('{}_{}.h5'.format(model_name,data_sets))
-loaded_model = keras.models.load_model('{}_{}.h5'.format(model_name,data_sets))
+model.save('{}_{}_{}.h5'.format(model_name,data_sets,opt_idx))
+loaded_model = keras.models.load_model('{}_{}_{}.h5'.format(model_name,data_sets,opt_idx))
 loss1,accuracy1= loaded_model.evaluate(test_batches)
 
 
